@@ -21,6 +21,22 @@ Class Prediction
 
 Prediction::Name()
     Params   - None
-    Returns  - FLAGS_prediction_module_name   -- Check where this is?
+    Returns  - FLAGS_prediction_module_name   -- Check where this is, might be a macro ?
+
+Predition::Init()
+{
+    Params    - None
+    Returns   - start_time - Calls Clock::NowInSeconds() - Which is there in modules/common/time/time.h (time.cc)
+  
+
+    prediction_conf_.Clear();    --- This is a prediction_conf proto class or message (Check where this is)
+                             --- This clears the existing message/data
+    
+    if(! common::util::GetProto
+}
+
+                             
+  
+
     
      
