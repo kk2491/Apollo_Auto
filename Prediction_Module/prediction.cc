@@ -95,29 +95,7 @@ Predition::Init()
               //If unknown - Check if it ON_LANE or OFF_LANE and return the predictor type
     PredictorManager::instance()->Init(prediction_conf_);
         
-        
-    
-    
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-      
-    
-    
-      
+
                  
 }
 
