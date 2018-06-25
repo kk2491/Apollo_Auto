@@ -74,13 +74,30 @@ Predition::Init()
     //Location - /modules/prediction/evaluator_manager.cc
     //Go through the obstacles one by one (message obstacle_conf)
         //Check if the obstacle type is defined (obstacle_conf.has_obstacle_type())
+            //Message type is in /modules/perception/proto/perception_obstacle.proto
+            //(unknown, unknown_movable, unknown_unmovable, pedestrian, bicycle, vehicle)
         //Check if the obstacle evaluator type is defined (obstacle_conf.has_evaluator_type())
+            //(RNN, MLP, Cost)
         //Check if the obstacle has status and obstacle_status is OnLane
             //Determine whether it is vehicle, cyclist, pedestrian or unknown
-        
     EvaluatorManager::instance()->Init(prediction_conf_);
+        
+        
+    //Location - /modules/prediction/predictor/predictor_manager.cc
+    //Go though the obstacles one by one (message obstacle_conf())
+        //Check if the obstacle type is defined (obstacle_conf.has_obstacle_type())
+        //Check if the obstacle has predictor type (obstacle_conf.has_predictor_type())
+              //Lane_sequence, free_move, regional, move_sequence, empty, single_lane predictor
+        //Check the obstacle_type() - Type of the obstacle
+              //If vehicle - Check if it ON_LANE or OFF_LANE and return the predictor type
+              //If bicycle - Check if it ON_LANE or OFF_LANE and return the predictor type
+              //If pedestrian - Just return the predictor type
+              //If unknown - Check if it ON_LANE or OFF_LANE and return the predictor type
     PredictorManager::instance()->Init(prediction_conf_);
-
+        
+        
+    
+    
         
         
         
