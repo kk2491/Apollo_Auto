@@ -8,6 +8,8 @@ Libraries   :   gflags/gflags.h
                 
                 /* This calls APOLLO_MAIN function which is in the file apollo_app.h as #define or macro and creates APP class
                 and during execution below piece of code is executed
+                
+                modules/common/apollo_app.h
                                 
                 This is the int main function
                           it initiates InitGoogleLogging
