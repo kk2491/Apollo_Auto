@@ -22,7 +22,7 @@ Note that at this point in time, the module does not exit cleanly. Therefore, on
 ### Creating New Obstacles
 In the CSV file the parameters must be updated in the format as shown below separated by **;** (semicolon).
 
-![](file:///H:\MD\CSV_File_Update.JPG)
+![](/images/CSV_File_Update.JPG)
 
 Note that at this point of time there is no column names in the CSV file and data must be entered in the order as below
 
