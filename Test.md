@@ -5,7 +5,7 @@ This guide describes how to add, build, and use the obstacle sim capability with
 ### Adding Obstacle Sim
 The following are needed for obstacle sim to function in order to generate multiple objects:
 1. In the main Apollo folder: **obstacle_sim_test.sh**
-2. Obstacle sim directory provided here which needs to be copied into the **/modules/drivers** directoty.
+2. **Obstacle sim** directory provided here which needs to be copied into the **/modules/drivers** directoty.
 
 ### Building Obstacle Sim
 To build the module, within Docker run bash obstacle_sim_test.sh build. The resultant files are contained within **modules/devel_isolated/**.
