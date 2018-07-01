@@ -1,4 +1,4 @@
-## Introduction
+# Introduction
 
 This guide describes how to add, build, and use the obstacle sim capability within Apollo to create multiple obstacles in Dreamview.
 
