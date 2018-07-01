@@ -24,7 +24,7 @@ In the CSV file the parameters must be updated in the format as shown below sepa
 
 ![](/images/CSV_File_Update.JPG)
 
-Note that at this point of time there is no column names in the CSV file and data must be entered in the order as below
+Note that there are no column names in the CSV file and data must be entered in the order as below
 
         location.set_x()  
         location.set_y()  
