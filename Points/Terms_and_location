@@ -1,0 +1,7 @@
+
+Minimum Speed of obstacle :
+Location :  apollo/modules/planning/common/planning_gflags.cc
+DEFINE_double(static_obstacle_speed_threshold, 2.0,
+              "obstacles are considered as static obstacle if its speed is "
+"less than this value (m/s)");
+
