@@ -46,45 +46,45 @@ The trajectory of the obstacle. /apollo/prediction[pb_msgs/PredictionObstacle].
   * Run Predictor.<br />
   * Publish the message with the new data to the publication_obstacles header structure.<br />
 
-## Evaluator Evaluator:
+## Evaluator:
 * Create a new NewEvaluator:<br />
   * data/mlp_vehicle_model.bin: The core part of the evaluator implemented with deep learning.<br />
   * The configuration output of the feature.proto or lane_graph.proto file is unclear.<br />
   * In the evaluator/vehicle/ directory, implement a new evaluator class NewEvaluator based on the Evaluator. And refer to the mlp_evaluator implementation class.<br />
-  * The new evaluator class implemented in the prediction_conf.pb.txt file is specified.<br />
-  * Modify the evaluator class used by default in evaluator_manager.h.<br />
+  * The new evaluator class implemented in the prediction_conf.pb.txt file is specified.<br />
+  * Modify the evaluator class used by default in evaluator_manager.h.<br />
 * Run() function in evaluator_manager.cc:<br />
-  * Get the obstacle container container.<br />
-  * Traverse all obstacles and use the obstacle id and obstacle container to obtain obstacle information obstacle.<br />
-  * For obstacles on the lane, call Evaluate for evaluation.<br />
+  * Get the obstacle container container.<br />
+  * Traverse all obstacles and use the obstacle id and obstacle container to obtain obstacle information obstacle.<br />
+  * For obstacles on the lane, call Evaluate for evaluation.<br />
 * Evaluate() function in mlp_evaluator.cc:<br />
-  * Take a single obstacle as a parameter. Calculate the feature of a single obstacle and calculate its probability.<br />
-  * Multiple lane_graph_ptr is included in each obstacle_ptr.<br />
-  * Calculate feature_values ​​using obstacle_ptr and lane_graph_ptr<br />
-  * The probability value probability is calculated by feature_values.<br />
-  * Set the probability value probability to lane_sequence_ptr.<br />
-  * Further analysis needs to understand the concept of feature and lane_sequence, which requires access to the algorithm, and the temporary evaluator is here.<br />
+  * Take a single obstacle as a parameter. Calculate the feature of a single obstacle and calculate its probability.<br />
+  * Multiple lane_graph_ptr is included in each obstacle_ptr.<br />
+  * Calculate feature_values ​​using obstacle_ptr and lane_graph_ptr<br />
+  * The probability value probability is calculated by feature_values.<br />
+  * Set the probability value probability to lane_sequence_ptr.<br />
+  * Further analysis needs to understand the concept of feature and lane_sequence, which requires access to the algorithm, and the temporary evaluator is here.<br />
 
 ## Predictor:
- * Function: Predict the future trajectory of obstacles.<br />
- * Create a new predictor, NewPredictor:<br />
-   * Create a new directory vehicle under predictor/.<br />
-   * Create new_predictor.h and new_predictor.cc in the vehicle directory, mainly inheriting from the Predictor class definition and implementing the subclass NewPredictor. Specific implementation can refer to the vehicle peer directory free_move and so on.<br />
-   * Update the configuration file prediction_conf.pb.txt to add a new predictor type.<br />
-   * Update the manager to modify the default predictor type in the file predictor_manager.h.<br />
- * The run() function in prediction_manager.cc:<br />
-   * Get the obstacle container container.<br />
-   * Set the timestamp of the predicted obstacle.<br />
-   * Obtain obstacle information obstacle based on the id and container in the predicted obstacle.<br />
-   * Set the type predictor of the predictor based on the type in the predicted obstacle.<br />
-   * Pass the obstacle information and execute the predictor predictor->Predict(obstacle).<br />
-   * Configure all tracks of obstacles into the predicted obstacles. And update the timestamp.<br />
- * Predictor function Predict() function:<br />
-   * Get the feature based on the obstacle information.<br />
-   * Get num_lane_sequence by feature.<br />
-   * Traverse num_lane_sequence and get the sequence by feature.<br />
-   * Get curr_lane_id from the sequence.<br />
-   * Get the TrajectoryPoint from the curr_lane_id via the DrawLaneSequenceTrajectoryPoints() function.<br />
-   * Obtain trajectory from TrajectoryPoint via the GenerateTrajectory() function.<br />
-   * Set the probability of the trajectory and store it in the trajectories_vector.<br />
-   * Similar to Evaluator, further analysis requires specific algorithms, and is here for the time being.<br />
+* Function: Predict the future trajectory of obstacles.<br />
+* Create a new predictor, NewPredictor:<br />
+  * Create a new directory vehicle under predictor/.<br />
+  * Create new_predictor.h and new_predictor.cc in the vehicle directory, mainly inheriting from the Predictor class definition and implementing the subclass NewPredictor. Specific implementation can refer to the vehicle peer directory free_move and so on.<br />
+  * Update the configuration file prediction_conf.pb.txt to add a new predictor type.<br />
+  * Update the manager to modify the default predictor type in the file predictor_manager.h.<br />
+* The run() function in prediction_manager.cc:<br />
+  * Get the obstacle container container.<br />
+  * Set the timestamp of the predicted obstacle.<br />
+  * Obtain obstacle information obstacle based on the id and container in the predicted obstacle.<br />
+  * Set the type predictor of the predictor based on the type in the predicted obstacle.<br />
+  * Pass the obstacle information and execute the predictor predictor->Predict(obstacle).<br />
+  * Configure all tracks of obstacles into the predicted obstacles. And update the timestamp.<br />
+* Predictor function Predict() function:<br />
+  * Get the feature based on the obstacle information.<br />
+  * Get num_lane_sequence by feature.<br />
+  * Traverse num_lane_sequence and get the sequence by feature.<br />
+  * Get curr_lane_id from the sequence.<br />
+  * Get the TrajectoryPoint from the curr_lane_id via the DrawLaneSequenceTrajectoryPoints() function.<br />
+  * Obtain trajectory from TrajectoryPoint via the GenerateTrajectory() function.<br />
+  * Set the probability of the trajectory and store it in the trajectories_vector.<br />
+  * Similar to Evaluator, further analysis requires specific algorithms, and is here for the time being.<br />
