@@ -69,6 +69,26 @@ message PredictionObstacles {
 }
 ```
 
+Note:
+
+Fetch obstacle information from Prediction module : ```prediction_obstacles.prediction_obstacle()```
+
+Fetch the trajectories for obstacle : ```prediction_obstacle.trajectory()```
+
+Fetch the published history messages in Adapter : ```const auto& prediction = *(AdapterManager::GetPrediction()) ```
+
+Fetch recently released Prediction obstacles : ```prediction.GetLatestObserved()```
+
+Apollo uses **Lagged Prediction** - more accurate obstacle prediction acquition method.
+   
+   Information released by Prediction module
+   Data is also predicted using the obstacle trajectories in the historical information.
+
+
+
+
+
+
 
 
 
