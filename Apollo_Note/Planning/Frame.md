@@ -630,7 +630,491 @@ If it exceeds the threshold, then the obstacle can overtake the Ego vehicle. If 
   
 ### 3.2 Change lane processing - CHANGE_LANE
 
-In case of change lane, first step is to find obstacles 
+In case of change lane, first step is to find obstacles that are following the Ego vehicle and ones that are tyring to overtake the Ego vehicle.
+
+**Following Ego vehicle ??????**
+
+These obstacle trajectories are the lane change trajectories that effect the Ego vehicle. 
+In next planning stage information such as location and speed of obstacles and Ego vehicles would be used. 
+For each reference line, Apollo considers obstacles closest to the Ego vehicle that can effect the lane change and sets the obstacle to overtake the Ego vehicle. 
+
+```
+// / file in apollo/modules/planning/tasks/traffic_decider/change_lane.cc 
+Status ChangeLane::ApplyRule (Frame* const frame, ReferenceLineInfo* const reference_line_info) {
+   // If it is a straight street, you don't need to change lanes, then ignore 
+  if (reference_line_info-> Lanes (). IsOnSegment ()) {
+     return  Status::OK ();
+  } // calculate warning obstacles & overtaking obstacles 
+  guard_obstacles_. clear ();
+  overtake_obstacles_. clear ();
+   if (! FilterObstacles (reference_line_info )) {
+     return
+   Status(common::PLANNING_ERROR, "Failed to filter obstacles");
+  }
+  // 创建警示障碍物类
+  if (config_.change_lane().enable_guard_obstacle() && !guard_obstacles_.empty()) {
+    for (const auto path_obstacle : guard_obstacles_) {
+      auto* guard_obstacle = frame->Find(path_obstacle->Id());
+      if (guard_obstacle &&  CreateGuardObstacle(reference_line_info, guard_obstacle)) {
+        AINFO << "Created guard obstacle: " << guard_obstacle->Id();
+      }
+    }
+  }
+  // 设置超车标志
+  if (!overtake_obstacles_.empty()) {
+    auto* path_decision = reference_line_info->path_decision();
+    const auto& reference_line = reference_line_info->reference_line();
+    for (const auto* path_obstacle : overtake_obstacles_) {
+      auto overtake = CreateOvertakeDecision(reference_line, path_obstacle);
+      path_decision->AddLongitudinalDecision(
+          TrafficRuleConfig::RuleId_Name(Id()), path_obstacle->Id(), overtake);
+    }
+  }
+  return Status::OK();
+}
+
+```
+
+Step 1: Overtaking and Warning obstacle calculation
+
+- Obstacle without Trajectory is ignored
+
+```
+if (!obstacle->HasTrajectory()) {
+  continue;
+}
+```
+
+- Obstacle in front of Ego vehicle is ignored and has no effect on lane change.
+
+```
+if (path_obstacle->PerceptionSLBoundary().start_s() > adc_sl_boundary.end_s()) {
+  continue;
+}
+```
+
+- Mark the obstacle as overtaking obstacle if it is within certain threshold distnace (10 m)
+
+```
+if (path_obstacle->PerceptionSLBoundary().end_s() <
+        adc_sl_boundary.start_s() -
+            std::max(config_.change_lane().min_overtake_distance(),   // min_overtake_distance: 10m
+                     obstacle->Speed() * min_overtake_time)) {        // min_overtake_time: 2s
+  overtake_obstacles_.push_back(path_obstacle);
+}
+```
+
+- Ignore if the obstacle speed is very small (less than min_guard_speed) or the obstacele is not on the reference line at the end as they have no efffect on lane change. 
+
+```
+if (last_point.v() < config_.change_lane().min_guard_speed()) {
+  continue;
+}if (!reference_line.IsOnRoad(last_point.path_point())) {
+  continue;
+}
+```
+
+- The last planned point of the obstacle is on the reference line but it exceeds the threhold distance from Ego vehicle. It doesn't have effect on lane change.
+
+```
+SLPoint last_sl;
+if (!reference_line.XYToSL(last_point.path_point(), &last_sl)) {
+  continue;
+}if (last_sl.s() < 0 || last_sl.s() > adc_sl_boundary.end_s() + kGuardForwardDistance) {
+  continue;
+}
+```
+
+2. Creating Warning Obstacles
+
+Creating warning obstacle is actually predicting the trajectory of the obstacles in future. The code ```ChangeLane::CreateObstacle``` shows the prediction method of obstacle trajectories.
+
+**Check this ..?????**
+The predicted trajectory is spliced on the original trajectory (i.e prediction is performed again after the last trajectory point). 
+The assumption of this prediction is that the obstacle is in the form of reference line.
+
+Note:
+Predicted Length
+The obstacle prediction trajectory focusses on the ```config_.change_lane().guard_distance()``` of 100 m in front of Ego vehicle.
+
+Obstacle Speed Assumption
+Within this distance the obstacle speed is considered consistent with the last track point speed ```extend_v```, and would be verified as reference line advances.
+
+Predicted Frequency
+The distance between the 2 points is the length of the obstacle, so the relative time difference the 2 points : ```time_delta = kStepDistance / extend_v```
+
+
+3. Creating obstacle overtaking labels
+
+```
+/// file in apollo/modules/planning/tasks/traffic_decider/change_lane.cc
+ObjectDecisionType ChangeLane::CreateOvertakeDecision(
+    const ReferenceLine& reference_line, const PathObstacle* path_obstacle) const {
+  ObjectDecisionType overtake;
+  overtake.mutable_overtake();
+  const double speed = path_obstacle->obstacle()->Speed();
+  double distance = std::max(speed * config_.change_lane().min_overtake_time(),  // 设置变道过程中，障碍物运动距离
+                             CONFIG_. change_lane (). min_overtake_distance ()); 
+  overtake. mutable_overtake () -> set_distance_s (Distance);   
+   Double fence_s = path_obstacle-> PerceptionSLBoundary . () end_s () + Distance; 
+   Auto . Point = reference_line GetReferencePoint (fence_s);                / / After setting the lane change, the position of the obstacle on the reference line is 
+  overtake. mutable_overtake ()-> set_time_buffer (config_. change_lane (). min_overtake_time ()); // Set the minimum time required for the lane changeOvertake 
+  . mutable_overtake ()-> set_distance_s (distance);                // Set the distance the obstacle advances during the lane changeover 
+  . mutable_overtake ()-> set_fence_heading (point. heading ()); 
+  overtake. mutable_overtake ()-> mutable_fence_point ( )-> set_x (point. x ()); // Set the coordinates of the obstacle after the lane change is completed 
+  . mutable_overtake ()-> mutable_fence_point ()-> set_y (point. y ()); 
+  overtake. mutable_overtake () ->mutable_fence_point()->set_z(0.0);
+  return overtake;
+}
+```
+
+
+### 3.3 Crosswalk conditioning - CROSSWALK
+
+According to the **comity** rule, when the pedestrian or non-motor vehicle is far away the Ego vehicle can drive through the Crosswalk.
+When someone passes by the Crosswalk, Ego vehicle must stop and let the pedestrian pass. 
+
+```
+// / file in apollo/modules/planning/tasks/traffic_decider/crosswalk.cc 
+Status Crosswalk::ApplyRule (Frame* const frame, ReferenceLineInfo* const reference_line_info) {
+   // Check if there is a crosswalk area 
+  if (! FindCrosswalks (reference_line_info)) {
+     return  the Status :: the OK ();
+  } // do for each obstacle markers, the presence of the obstacle, the vehicle should stop or no direct passing MakeDecisions (Frame, reference_line_info);
+   return the Status :: the OK ();
+}
+
+```
+
+Step 1: Check that there are obstacles in each crosswalk area that require Ego vehicle to make stop.
+
+- If the Ego vehicle has already passed a part of the crosswalk then ignore, no need to stop.
+
+```
+// skip crosswalk if master vehicle body already passes the stop line 
+double stop_line_end_s = crosswalk_overlap->end_s;    
+ if (adc_front_edge_s - stop_line_end_s > config_.crosswalk().min_pass_s_distance()) {   //The head passes a certain distance from the crosswalk, min_pass_s_distance: 1.0 
+  Continue ;
+}
+```
+
+Go through the obstacles (pedestrians and non-motor vehicles) in each crosswalk aread and expand the crosswalk area to improve safety.
+
+- Ignore if the obstacle is not in extented crosswalk.
+
+```
+// expand crosswalk polygon
+// note: crosswalk expanded area will include sideway area
+Vec2d point(perception_obstacle.position().x(),
+            perception_obstacle.position().y());const Polygon2d crosswalk_poly = crosswalk_ptr->polygon();
+bool in_crosswalk = crosswalk_poly.IsPointIn(point);
+const Polygon2d crosswalk_exp_poly = crosswalk_poly.ExpandByDistance(
+         config_.crosswalk().expand_s_distance());bool in_expanded_crosswalk = crosswalk_exp_poly.IsPointIn(point);if (!in_expanded_crosswalk) {
+  continue;
+}
+
+```
+
+Calculate the lateral distance of the obstacle to the reference line ```obstacle_l_distance```, whether it is on and nearer to road. And whether the obstacle trajectory intersects the reference line ```is_path_cross```.
+
+- If the lateral distance is greater than the loose distance and if the trajectory of the obstacle intersect then stop the Ego vehicle. Otherwise ego vehicle can be driven through the crosswalk as the lateral distance is relatively far. 
+
+```
+if (obstacle_l_distance >= config_.crosswalk().stop_loose_l_distance()) {  // stop_loose_l_distance: 5.0m
+  // (1) when obstacle_l_distance is big enough(>= loose_l_distance),  
+  //     STOP only if path crosses
+  if (is_path_cross) {
+    stop = true;
+  }
+}
+```
+
+- If the lateral distance is less than the compact distance and if the obstacle trajectory intersects with the reference line then stop the Ego vehicle. 
+
+```
+else if (obstacle_l_distance <= config_.crosswalk().stop_strick_l_distance()) { // stop_strick_l_distance: 4.0m
+  // (2) when l_distance <= strick_l_distance + on_road(not on sideway),
+  //     always STOP
+  // (3) when l_distance <= strick_l_distance + not on_road(on sideway),
+  //     STOP only if path crosses
+  if (is_on_road || is_path_cross) {
+    stop = true;
+  }
+} 
+
+```
+
+- Stop the Ego vehicle if the lateral distance is between the compact distance and loose distance.
+
+```
+else {
+  // TODO(all)
+  // (4) when l_distance is between loose_l and strick_l
+  //     use history decision of this crosswalk to smooth unsteadiness
+  stop = true;
+}
+```
+
+If there is an obstacle that requires the Ego vehicle to stop, calculate the acceleration of the Ego vehicle and starts decelerating to stop the Ego vehicle. If the speed of the Ego vehicle can not be slowed down quickly, then pass through the crosswalk.
+
+Formula for calculating the acceleration is 
+
+```a = (v2 − u2 ) / 2s```
+
+```( 0 - v2 ) = 2as ```
+
+s = distance from the current stop to the obstacle. 
+
+```util::GetADCStopDeceleration``` does this calculation.
+
+
+Step 2: Build virtual wall obstacles and set parking labels for obstacles that effect the trajectory of the Ego vehicle.
+
+A single obstacle is a small frame. Ego vehicle must keep a certain distance from the obstacle during the driving process. If the obstacle is in the center build a Virtual wall with a length of 0.1 and a width of lane to ensure safety. 
+
+```
+// create virtual stop wall
+std::string virtual_obstacle_id =
+      CROSSWALK_VO_ID_PREFIX + crosswalk_overlap->object_id;auto* obstacle = frame->CreateStopObstacle(
+      reference_line_info, virtual_obstacle_id, crosswalk_overlap->start_s);if (!obstacle) {
+  AERROR << "Failed to create obstacle[" << virtual_obstacle_id << "]";
+  return -1;
+}
+PathObstacle* stop_wall = reference_line_info->AddObstacle(obstacle);
+if (!stop_wall) {
+  AERROR <<
+
+"Failed to create path_obstacle for: " << virtual_obstacle_id;
+  return -1;
+}
+```
+
+PredictionObstacle is packaged into Obstacle. Create an obstacle using box Box2d and add the parking signs to these virtual walls.
+
+```
+// build stop decision
+const double stop_s =         // 计算停车位置的累计距离，stop_distance：1m，人行横道前1m处停车
+      crosswalk_overlap->start_s - config_.crosswalk().stop_distance();auto stop_point = reference_line.GetReferencePoint(stop_s);
+double stop_heading = reference_line.GetReferencePoint(stop_s).heading();
+ObjectDecisionType stop;auto stop_decision = stop.mutable_stop();
+stop_decision->set_reason_code(StopReasonCode::STOP_REASON_CROSSWALK);
+stop_decision->set_distance_s(-config_.crosswalk().stop_distance());
+stop_decision->set_stop_heading
+
+
+(stop_heading);                  // Set the angle/direction of the parking point 
+stop_decision-> mutable_stop_point ()->set_x(stop_point.x());     // Set the coordinates of the parking spot 
+stop_decision-> mutable_stop_point ()->set_y(stop_point.y ()); 
+stop_decision-> mutable_stop_point ()->set_z( 0.0 ); for ( auto pedestrian : pedestrians) { 
+  stop_decision-> add_wait_for_obstacle (pedestrian);   // Set the obstacle id that causes the unmanned vehicle to stop 
+} auto * path_decision = Reference_line_info-> path_decision (); 
+path_decision-> AddLongitudinalDecision
+
+
+
+(   
+      TrafficRuleConfig::RuleId_Name(config_.rule_id()), stop_wall->Id(), stop);
+      
+```
+
+
+
+### 3.4 Destination condition processing - DESTINATION
+
+When arriving at the destination obstacles that cause the Ego vehicle to take actions are parking on side or finding a suitable parking spot (Small distance from the destination, no need to park). 
+
+Step 1: Main decision logic
+
+- Check if Ego vehicle is in PULL_OVER state, continue to keep the status.
+
+```
+auto* planning_state = GetPlanningStatus()->mutable_planning_state();
+if (planning_state->has_pull_over() && planning_state->pull_over().in_pull_over()) {
+  PullOver(nullptr);
+  ADEBUG << "destination: continue PULL OVER";
+  return 0;
+}
+```
+
+- Check if the Ego vehicle needs to go to PULL_OVER status. This depends on the distance between the main reference line and the destination and whether the PULL_OVER is allowed. 
+
+```
+const auto& routing = AdapterManager::GetRoutingResponse()->GetLatestObserved();
+const auto& routing_end = *routing.routing_request().waypoint().rbegin();
+double dest_lane_s = std::max(       // stop_distance: 0.5，目的地0.5m前停车
+      0.0, routing_end.s() - FLAGS_virtual_stop_wall_length -
+      config_.destination().stop_distance()); 
+common::PointENU dest_point;if (CheckPullOver(reference_line_info, routing_end.id(), dest_lane_s, &dest_point)) {
+  PullOver(&dest_point);
+} else {
+  Stop(frame, reference_line_info, routing_end.id
+(), dest_lane_s);
+}
+```
+
+Step 2: CheckPullPver mechanism (Apollo doesn't enable PULL_OVER in destination)
+
+- Return false if the PULL_OVER is disabled in the DESTINATION state.
+
+```
+if (!config_.destination().enable_pull_over()) {
+  return false;
+}
+```
+
+- Return false if the destination is not on the reference line.
+
+```
+const auto dest_lane = HDMapUtil::BaseMapPtr()->GetLaneById(hdmap::MakeMapId(lane_id));
+const auto& reference_line = reference_line_info->reference_line();
+// check dest OnRoad
+double dest_lane_s = std::max(
+    0.0, lane_s - FLAGS_virtual_stop_wall_length -
+    config_.destination().stop_distance());
+*dest_point = dest_lane->GetSmoothPoint(dest_lane_s);
+if (!reference_line.IsOnRoad(*dest_point)) {
+  return false;
+}
+```
+
+- Return false if the Ego vehicle is far away from the destination.
+
+```
+// check dest within pull_over_plan_distance
+common::SLPoint dest_sl;if (!reference_line.XYToSL({dest_point->x(), dest_point->y()}, &dest_sl)) {
+  returnfalse;
+}double adc_front_edge_s = reference_line_info->AdcSlBoundary().end_s();
+double distance_to_dest = dest_sl.s() - adc_front_edge_s;
+// pull_over_plan_distance: 55mif (distance_to_dest > config_.destination().pull_over_plan_distance()) {
+  // to far, not sending pull-over yetreturnfalse;
+}
+ 
+```
+
+
+Step 3: Obstacle PULL_OVER and STOP label setting
+
+```
+int Destination::PullOver(common::PointENU* const dest_point) {
+  auto* planning_state = GetPlanningStatus()->mutable_planning_state();
+  if (!planning_state->has_pull_over() || !planning_state->pull_over().in_pull_over()) {
+    planning_state->clear_pull_over();
+    auto pull_over = planning_state->mutable_pull_over();
+    pull_over->set_in_pull_over(true);
+    pull_over->set_reason(PullOverStatus::DESTINATION);
+    pull_over->set_status_set_time(Clock::NowInSeconds());if (dest_point) {
+      pull_over->mutable_inlane_dest_point()->set_x(dest_point->x());
+      pull_over->mutable_inlane_dest_point()->set_y(dest_point->y());
+    }
+  }return0;
+}
+```
+
+The stop label setting is same as the STOP in the CROSSWALK condition processing. A virtual wall is created and encapsulated into a new PathObstacle added to the PathDecision of the ReferenceLineInfo.
+
+
+
+### 3.5 Front car situation handling - FRONT_VEHICLE
+
+There are 2 types of obstacles affecting the decision of the Ego vehicle. 
+a. Wait for the opportunity to overtake or follow the obstacle based on the obstacle information. 
+b. Ego vehicle has to stop if the obstacle is static. 
+
+a:
+Follow the obstacle and wait for the opportunity to overtake. 
+
+Overtaking defined here requires the Ego vehice to adjust the lateral distance and perform overtake. ** The direct driving through the obstacle in front is normal driving and obstacle can be ignored in this case (But WHY ?????**. 
+
+There are 4 steps to complete the overtake behavior.
+
+- Normal drive (DRIVE)
+- Waiting for overtaking (WAIT)
+- Overtaking (SIDEPASS)
+- Normal driving (DRIVE)  
+
+If the distance from Obstalce is too far then Ego vehice status would be in DRIVE. 
+If the distance is relatively close, and overtaking condition is not met then Ego vehicle would follow the obstacle.  
+If the distance is too close and the speed is small, then Ego vehicle would WAIT.
+If the overtaking conditions are met, then Ego vehicle would go to OVERTAKE status.
+Once the overtaking is completed, return to normal DRIVE status. 
+
+
+Step 1:
+Check condition overtaking - FrontVehicle::FindPassableObstacle
+
+This checks for the obstacle that affect the normal driving of the Ego vehicle (ADC may need to overtake). Go through the PathObstacle in PathDecision and then check the following conditions. 
+
+- Check if the obstacle is virtual or static. If so then depending on the condition Ego vehicle may have to stop. Overtaking strategy doesnt come here. 
+
+```
+if (path_obstacle->obstacle()->IsVirtual() || !path_obstacle->obstacle()->IsStatic()) {
+  ADEBUG << "obstacle_id[" << obstacle_id << "] type[" << obstacle_type_name
+        << "] VIRTUAL or NOT STATIC. SKIP";
+  continue;
+}
+```
+
+
+- Check the position of the obstacle and Ego vehicle. Obstacles can be ignored if they fall behind the ego vehicle. 
+
+```
+const auto& obstacle_sl = path_obstacle->PerceptionSLBoundary();
+if (obstacle_sl.start_s() <= adc_sl_boundary.end_s()) {
+  ADEBUG << "obstacle_id[" << obstacle_id << "] type[" << obstacle_type_name
+         << "] behind ADC. SKIP";
+  continue;
+}
+```
+
+- Check the horizontal and vertical distance between the obstacle and Ego vehicle. If the logitudinal and vertical distance are too far then those obstacles can be ignored and Ego vehicle can stay in normal driving status. 
+
+```
+const double side_pass_s_threshold = config_.front_vehicle().side_pass_s_threshold(); // side_pass_s_threshold: 15m
+if (obstacle_sl.start_s() - adc_sl_boundary.end_s() > side_pass_s_threshold) {
+  continue;
+}constdouble side_pass_l_threshold = config_.front_vehicle().side_pass_l_threshold(); // side_pass_l_threshold: 1mif (obstacle_sl.start_l() > side_pass_l_threshold || 
+    obstacle_sl.end_l() < -side_pass_l_threshold) {continue;
+}
+
+```
+
+```FrontVehicle::FindPassableObstacle``` return the first obstacle found to limit the driving of the Ego vehicle.
+
+Step 2:
+Set the signs for each stage of Overtaking ```FrontVehicle::ProcessSidePass```
+
+- Jf tbe 
+
+
+
+If the previous state is SidePassStatus::WAIT and if there is no obstacle in front then set to Normal driving 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
