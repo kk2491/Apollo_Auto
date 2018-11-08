@@ -1083,155 +1083,721 @@ if (obstacle_sl.start_s() - adc_sl_boundary.end_s() > side_pass_s_threshold) {
 Step 2:
 Set the signs for each stage of Overtaking ```FrontVehicle::ProcessSidePass```
 
-- Jf tbe 
+- If the previous stage is in SidePassStatus::UNKNOWN state, set it to normal driving DRIVE. 
 
+- If the previous state is in SidePassStatus::DRIVE and there is an obstacle blocking the path of Ego vehicle, then set the state WAIT. If no obstacles then continue normal driving DRIVE.
 
+```
+case SidePassStatus::DRIVE: {
+  constexpr double kAdcStopSpeedThreshold = 0.1;  // unit: m/s
+  const auto& adc_planning_point = reference_line_info->AdcPlanningPoint();
+  if (!passable_obstacle_id.empty() &&            // 前方有障碍物则需要等待
+      adc_planning_point.v() < kAdcStopSpeedThreshold) {
+    sidepass_status->set_status(SidePassStatus::WAIT);
+    sidepass_status->set_wait_start_time(Clock::NowInSeconds());
+  }break;
+}
+```
+
+- If the previous state is SidePassStatus::WAIT then based on the situation below status change would be done.
+
+a. If there is no obstruction, set to Normal driving DRIVE.
+
+b. If there is an obstacle in the front of Ego vehicle, start the WAIT time. If it exceeds the threshold find the left and right lanes for effective lanes overtaking. If no effective lanes present then stay in WAIT state.
+
+```
+Double wait_start_time = sidepass_status-> wait_start_time ();   
+ double wait_time = Clock::NowInSeconds() - wait_start_time;   // calculate the waited time 
+
+if (wait_time > config_.front_vehicle().side_pass_wait_time()) { // exceed the threshold, look for Other lanes are overtaking. Side_pass_wait_time:30s 
+}
+```
+
+First query the HDMap to get the lane where the current ReferenceLine is located. If there is a lane, set the overtaking status. If there is no lane check the right lane. 
+If the right lane is CITY_DRIVING (motorway, not non-motor vehicle lane or pedestrian street or parking) then proceed with overtaking with right lane.
 
-If the previous state is SidePassStatus::WAIT and if there is no obstacle in front then set to Normal driving 
+```
+if (enter_sidepass_mode) {
+  sidepass_status->set_status(SidePassStatus::SIDEPASS);
+  sidepass_status->set_pass_obstacle_id(passable_obstacle_id);
+  sidepass_status->clear_wait_start_time();
+  sidepass_status->set_pass_side(side);   // side知识左超车还是右超车。取值为ObjectSidePass::RIGHT或ObjectSidePass::LEFT
+}
+```
+
+- If the previous state is SidePassStatus::SIDEPASS and if there is no obstacle present then set to Normal driving DRIVE. Else continue the state in overtaking process. (Why ?????)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-### 3.1 After car situation processing - BACKSIDE_VEHICLE
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-     
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```
+case SidePassStatus::SIDEPASS: {
+  if (passable_obstacle_id.empty()) {
+    sidepass_status->set_status(SidePassStatus::DRIVE);
+  }break;
+}
+
+```
+
+
+2. Parking Treament (Stop the Ego vehicle)
+
+- Check if the obstacle is stationary object. Ignore if it is virtual or dynamic obsacle, these will be taken care by Overtaking module.
+
+```
+if (path_obstacle->obstacle()->IsVirtual() || !path_obstacle->obstacle()->IsStatic()) {
+  continue;
+}
+```
+
+-  Get the position of obstacle wrt Ego vehicle, Ignore if the obstacle is behind the Ego vehicle. This will be taken care by Backside vehicle module.
+
+```
+const auto& obstacle_sl = path_obstacle->PerceptionSLBoundary();
+if (obstacle_sl.end_s() <= adc_sl.start_s()) {
+    continue;
+}
+```
+
+- If the obstacle is marked in Overtaking module (which makes the Ego vehicle to overtake the obstacle) then there is no need to consider the obstacle at this time. 
+
+```
+// check SIDE_PASS decision
+if (path_obstacle->LateralDecision().has_sidepass()) {
+  continue;
+}
+```
+
+- Build stop decision if the driveaway doesn't have enough width to allow the Ego vehicle to overtake the obstacle.
+
+```
+Double left_width = 0.0 ;
+ double right_width = 0.0 ; 
+reference_line.GetLaneWidth(obstacle_sl.start_s(), &left_width, &right_width); double left_driving_width = left_width - obstacle_sl.end_l() -            // calculate the left-side free distance of the obstacle 
+                                config_.front_vehicle() .nudge_l_buffer(); double right_driving_width = right_width + obstacle_sl.start_l() -        // Calculate the free distance to the right of the obstacle. The + sign is because the left side of the lane line FLU coordinate system is the negative axis, and the right side is the positive axis 
+                                 config_.front_vehicle( ).nudge_l_buffer(); if ((left_driving_width < adc_width && right_driving_width < adc_width) ||
+
+
+
+
+        (obstacle_sl.start_l() <= 0.0 && obstacle_sl.end_l() >= 0.0)) {
+  // build stop decision
+  double stop_distance = path_obstacle->MinRadiusStopDistance(vehicle_param);
+  const double stop_s = obstacle_sl.start_s() - stop_distance;
+  auto stop_point = reference_line.GetReferencePoint(stop_s);
+  double stop_heading = reference_line.GetReferencePoint(stop_s).heading();
+
+  ObjectDecisionType stop;auto stop_decision = stop.mutable_stop();
+  
+  if (obstacle_type == PerceptionObstacle::UNKNOWN_MOVABLE ||
+      obstacle_type == PerceptionObstacle::BICYCLE ||
+      obstacle_type == PerceptionObstacle::VEHICLE) {
+    stop_decision->set_reason_code(StopReasonCode::STOP_REASON_HEAD_VEHICLE);
+  } else {
+      stop_decision->set_reason_code(StopReasonCode::STOP_REASON_OBSTACLE);
+  }
+  stop_decision->set_distance_s(-stop_distance);
+  stop_decision->set_stop_heading(stop_heading);
+  stop_decision->mutable_stop_point()->set_x(stop_point.x());
+  stop_decision->mutable_stop_point()->set_y(stop_point.y());
+  stop_decision->mutable_stop_point()->set_z(0.0);
+  path_decision->AddLongitudinalDecision("front_vehicle", path_obstacle->Id(), stop);
+}
+
+```
+
+
+### 3.6 Forbidden zone situation handling - KEEP_CLEAR
+
+Forbidden zone is divided in to 2 categories
+a. No stop zone
+b. Intersection
+
+The approach is to build a forbidden zone on reference line from start_s to end_s (start_s and end_s are the projection points of forbidden zone start_s and end_s on reference line). Width of no stop zone is the road width of the reference line.
+ 
+
+1. Ignore if the Ego vehicle has already entered the no-stop zone or intersection. 
+
+```
+// check
+const double adc_front_edge_s = reference_line_info->AdcSlBoundary().end_s();
+if (adc_front_edge_s - keep_clear_overlap->start_s >
+      config_.keep_clear().min_pass_s_distance()) { // min_pass_s_distance：2.0m
+  return false;
+}
+```
+
+2. Create new keep clear zone obstacles and mark them as KEEP_CLEAR
+
+```
+// create virtual static obstacle
+auto* obstacle = frame->CreateStaticObstacle(
+  reference_line_info, virtual_obstacle_id, keep_clear_overlap->start_s,
+  keep_clear_overlap->end_s);if (!obstacle) {
+  returnfalse;
+}auto* path_obstacle = reference_line_info->AddObstacle(obstacle);
+if (!path_obstacle) {
+  returnfalse;
+}
+path_obstacle->SetReferenceLineStBoundaryType(StBoundary::BoundaryType::KEEP_CLEAR);
+```
+
+Here is an additional supplement to the process of creating obstacles in the forbidden / KEEP_CLEAR zone, mainly to calculate the calibration box for obstacles in the forbidden zone. (namely center, length and width)
+
+```
+
+/// file in apollo/modules/planning/common/frame.cc
+const Obstacle *Frame::CreateStaticObstacle(
+    ReferenceLineInfo *const reference_line_info,
+    const std::string &obstacle_id,
+    const double obstacle_start_s,
+    const double obstacle_end_s) {
+  const auto &reference_line = reference_line_info->reference_line();
+  // 计算禁停区障碍物start_xy，需要映射到ReferenceLine
+  common::SLPoint sl_point;
+  sl_point.set_s(obstacle_start_s);
+  sl_point.set_l(0.0); 
+  common::math::Vec2d obstacle_start_xy; if (!reference_line. SLToXY (sl_point, &obstacle_start_xy)) {
+     return nullptr ; 
+  } // calculate the forbidden zone obstacle end_xy, which needs to be mapped to ReferenceLine 
+  sl_point. set_s (obstacle_end_s); 
+  sl_point . set_l ( 0.0 ); 
+  Common Math :: :: Vec2d obstacle_end_xy; IF (reference_line!. SLToXY {(sl_point, & obstacle_end_xy))
+     return nullptr a ; 
+  } // left and right obstacle width width calculating parking area, and the reference Line consistent double left_lane_width = 0.0 ;
+  
+   
+  
+   
+  
+  Double right_lane_width = 0.0 ;
+   if (!reference_line. GetLaneWidth (obstacle_start_s, &left_lane_width, &right_lane_width)) {
+     return  nullptr ; 
+  } //The final calibration box for the obstacle in the forbidden zone 
+  common::math::Box2d obstacle_box{ common::math LineSegment2d :: (obstacle_start_xy, obstacle_end_xy), 
+      left_lane_width + right_lane_width}; // CreateStaticVirtualObstacle function is packaged into the parking area PathObstacle obstacle placed in PathDecision 
+      return CreateStaticVirtualObstacle (obstacle_id, obstacle_box); 
+}
+
+
+```
+
+
+### 3.7 Finding parking status - PULL_OVER
+
+Finding a Parking spot is essential to perform the PULL_OVER. If the current state is PULL_OVER and it is already in parking location, then only the status needs to be updated.
+If there is no parking location found, then it needs to be calculated. 
+Once parking location is found build a parking area obstacle, then create PULL_OVER label for the obstacle.
+
+```
+Status PullOver::ApplyRule (Frame* const frame, ReferenceLineInfo* const reference_line_info) { 
+  frame_ = frame; 
+  reference_line_info_ = reference_line_info; if (! IsPullOver ()) {
+     return Status::OK (); 
+  } // Check if the time is PULL_OVER If it is PULL_OVER, then there is already a stop point stop_point if ( CheckPullOverComplete ()) {
+     return Status::OK (); 
+  } 
+  common::PointENU stop_point; if ( GetPullOverStop (&stop_point) != 0 ) {    //
+   
+  
+   
+  Failed to get the parking location, the unmanned vehicle will stop at the stop lane 
+    BuildInLaneStop (stop_point); 
+    ADEBUG << " Could not find a safe pull over point. STOP in-lane " ; 
+  } else {
+     BuildPullOverStop (stop_point);            / / Get successful parking position, no pull over to park the vehicle in the lane from the finish 
+  } return the Status :: the OK (); 
+}
+
+```
+
+1. Get parking spot - ```GetPullOverStop()``` function
+
+- If the parking location / point is already updated in the status information. Then it can be used directly. 
+
+```
+if (pull_over_status.has_start_point() && pull_over_status.has_stop_point()) {
+    // reuse existing/previously-set stop point
+    stop_point->set_x(pull_over_status.stop_point().x());
+    stop_point->set_y(pull_over_status.stop_point().y());
+}
+```
+
+
+- If it doesn't exist, then parking location needs to be calculated using ```FindPullOverStop``` function
+
+**Why why why ?????** 
+
+The parking location needs to be in front of the destination point ```PARKING_SPOT_LONGITUDINAL_BUFFER``` (default 1m) and ```buffer_to_boundary``` stop at the drive test (default 0.5m).
+Ego vehicle is not allowed to PULL_OVER if the lane on the right side of the current lane is motorway (CITY_DRIVING). The method used by Apollo is **Sampling Detection**.
+From the front to the end position, a parking condition is checked every kDistanceUnit (default 5m) and if it is satisfied, then Ego vehicle stops directly on lane.
+
+```
+int PullOver::FindPullOverStop(PointENU* stop_point) {
+  const auto& reference_line = reference_line_info_->reference_line();
+  const double adc_front_edge_s = reference_line_info_->AdcSlBoundary().end_s();double check_length = 0.0;
+  double total_check_length = 0.0;
+  double check_s = adc_front_edge_s;      // check_s为当前车辆车头的累计距离constexprdoublekDistanceUnit = 5.0;
+  while (check_s < reference_line.
+
+  
+
+    Length() &&    // 在当前车道上，向前采样方式进行停车位置检索，前向检索距离不超过max_check_distance(默认60m)
+      total_check_length < config_.pull_over().max_check_distance()) {
+    check_s += kDistanceUnit;
+    total_check_length += kDistanceUnit;
+    ...
+  }
+}
+
+```
+
+Check the right lane of the point (check_s), if the right lane is CITY_DRIVING then ego vehicle can't be stopped without changing the lane. Ego vehicle needs to change the lane and continue the forward search. 
+
+```
+// check rightmost driving lane:
+//   NONE/CITY_DRIVING/BIKING/SIDEWALK/PARKING
+bool rightmost_driving_lane = true;
+for (auto& neighbor_lane_id : lane->lane().right_neighbor_forward_lane_id()) {   // 
+  const auto neighbor_lane = HDMapUtil::BaseMapPtr()->GetLaneById(neighbor_lane_id);
+  ...constauto& lane_type = neighbor_lane->lane().type();
+  if (lane_type == hdmap::Lane::CITY_DRIVING) {   //
+    
+    rightmost_driving_lane = false;
+    break;
+  }
+}if (!rightmost_driving_lane) {
+  check_length = 0.0;
+  continue;
+}
+
+```
+
+If the right lane is not a CITY_DRIVING then ego vehicle can perform PULL_OVER. 
+Parking location needs to be in front of the destination point ```PARKING_SPOT_LONGITUDINAL_BUFFER``` (default 1m) and ```buffer_to_boundary``` stop.
+
+The distance between the logitudinal direction and the parking point is based on front of the vehicle. 
+**What is this Why Why Why ???**
+The distance between the side and the parking point is taken as the reference from the minimum distance between the head of the lane and lane edge of the vehicle.
+
+```
+// all the lane checks have passed
+check_length += kDistanceUnit;
+if (check_length >= config_.pull_over().plan_distance()) {
+  PointENU point;// check corresponding parking_spotif (FindPullOverStop(check_s, &point) != 0) {
+    // parking_spot not valid/available
+    check_length = 0.0;
+    continue;
+  }
+  stop_point->set_x(point.x());
+  stop_point->set_y(point.y());
+  return0; 
+}
+
+```
+
+2. If the parking location is found in previous step (1), then constuct a PathObstacle at the parking location and set the label as STOP. This is done by ```BuildPullOverStop``` function.
+
+3. If the parking location is not found in (1), then force the Ego vehicle to make stop on lane. this is done by function ```BuildInLaneStop```.
+
+- First look for historical data ```inlane_dest_point``` whether historical data allows parking on lane
+
+- If ```inlane_dest_point``` not found, then search for parking location and PULL_OVER if there is parking spot available.
+
+- If parking spot is not found, look for the used inlane point in ```inlane_adc_position_stop_point_```, then park the Ego vehicle.
+
+- If the parking spot is still not found, then the Ego vehicle needs to make forced stop at the end of ```plan_distance``` on lane. Update ```inlane_adc_position_stop_point_```.
+
+
+### 3.8 Reference Line End processing - REFERENCE_LINE_END
+
+When the reference line ends, it is necessary to stop the Ego vehicle and re-route the routing query. In normal scenario, if the Reference line ends then there is no road ahead. And new routing needs to be updated to reach the destination. 
+
+Construct a stop barrier before the end of the Reference line and set the label to STOP.
+
+```
+Status ReferenceLineEnd::ApplyRule(Frame* frame, ReferenceLineInfo* const reference_line_info) {
+  const auto& reference_line = reference_line_info->reference_line();
+  // 检查参考线剩余的长度，足够则可忽略这个情况，min_reference_line_remain_length：50m
+  double remain_s = reference_line.Length() - reference_line_info->AdcSlBoundary().end_s();
+  if (remain_s > config_.reference_line_end().min_reference_line_remain_length()) {
+    return Status::OK();
+  }//
+   create avirtual stop wall at the end of reference line to stop the adc
+  std::string virtual_obstacle_id =  REF_LINE_END_VO_ID_PREFIX + reference_line_info->Lanes().Id();
+  double obstacle_start_s = reference_line.Length() - 2 * FLAGS_virtual_stop_wall_length; // 在参考线终点前，创建停止墙障碍物
+  auto* obstacle = frame->CreateStopObstacle(reference_line_info, virtual_obstacle_id, obstacle_start_s);
+  if (!obstacle) {
+    return Status(common::PLANNING_ERROR, "Failed to create reference line end obstacle");
+  }
+  PathObstacle* stop_wall = reference_line_info->AddObstacle(obstacle);
+  if (!stop_wall) {
+    return Status(
+        common::PLANNING_ERROR, "Failed to create path obstacle for reference line end obstacle");
+  }// build stop decision，设置障碍物停止标签constdouble stop_line_s = obstacle_start_s - config_.reference_line_end().stop_distance();
+  auto stop_point = reference_line.GetReferencePoint(stop_line_s);
+  ObjectDecisionType stop;auto
+
+  
+   
+   stop_decision = stop.mutable_stop();
+  stop_decision->set_reason_code(StopReasonCode::STOP_REASON_DESTINATION);
+  stop_decision->set_distance_s(-config_.reference_line_end().stop_distance());
+  stop_decision->set_stop_heading(stop_point.heading());
+  stop_decision->mutable_stop_point()->set_x(stop_point.x());
+  stop_decision->mutable_stop_point()->set_y(stop_point.y());
+  stop_decision->mutable_stop_point()->set_z(0.0);auto* path_decision = reference_line_info->path_decision();
+  path_decision->AddLongitudinalDecision(TrafficRuleConfig::RuleId_Name(config_.rule_id()), stop_wall->Id(), stop);
+  returnStatus::OK();
+}
+
+```
+
+
+### 3.9 Rerouting Query Processing - REROUTING (Full of doubts!!!)
+
+Based on the road condition, it can be divided into following scenarios.
+
+- If the current reference line is straight and it is not a turn. Then there is no need to reroute and wait for new route.
+
+- If the Ego vehicle is not on current reference line, then no rerouting required **Why ??????**
+
+- If the current reference line can exit, no rerouting is required.
+
+- If the current channel passage endpoint is not on reference line, no routing is required, waiting for a new route.
+
+- If the end of the reference line is too far away from the Ego vehicle, no rerouting required.
+
+- If the route query is performed last time, the time gap is less than the threshold, rerouting is not required and the new route is awaited.
+
+- In other cases, manually initiate routing query requirements.  
+
+**
+a) ```Frame::Rerouting``` - Task done by the code is generate a new route from current position to the Destination. 
+This function doesn't generate a new reference line because the reference line is generated by the ReferenceLineProvider class.
+
+b) Rerouting would be of no use if Ego vehicle is re-routed but it is not on reference line.
+
+c) It is better to wait for the ReferenceLineProvider to appply for rerouting and generate corresponding reference line. Therefore, the focus of 2, 3, 4 and so on is the lack of reference lines, not the positional deviation.**
+
+
+
+### 3.10 Signal condition processing - SIGNAL_LIGHT
+
+1. Check if there is a signal area under the current road conditions ```FindValidSignalLight```
+
+```
+signal_lights_from_path_.clear();
+for (const hdmap::PathOverlap& signal_light : signal_lights) {
+  if (signal_light.start_s + config_.signal_light().min_pass_s_distance() >
+        reference_line_info->AdcSlBoundary().end_s()) {
+    signal_lights_from_path_.push_back(signal_light);
+  }
+}
+```
+
+2. Access to information signals ```TrafficLight Perception``` using ```ReadSignals``` function.
+
+```
+const TrafficLightDetection& detection =
+      AdapterManager::GetTrafficLightDetection()->GetLatestObserved();
+for (int j = 0; j < detection.traffic_light_size(); j++) {
+  const TrafficLight& signal = detection.traffic_light(j);
+  detected_signals_[signal.id()] = &signal;
+}
+```
+
+
+3. Take decision based on the current signal status using ```MakeDecisions``` function.
+
+```
+For ( auto & signal_light : signal_lights_from_path_) {
+     // 1. If the signal light is red and the acceleration is not very large 
+    // 2. If the signal light is unknown and the acceleration is not very large 
+    // 3. If the signal light is yellow and the acceleration Not very big 
+    / / In the above three cases, the car is parked, the parking tag is consistent with the front 
+    if (( signal . color () == TrafficLight::RED && 
+         stop_deceleration < config_. signal_light (). max_stop_deceleration ()) || 
+        ( Signal . color () == TrafficLight::UNKNOWN && 
+         stop_deceleration < config_. signal_light (). max_stop_deceleration ()) ||
+        ( signal . color ( ) == TrafficLight::YELLOW && 
+         stop_deceleration < config_. signal_light (). max_stop_deacceleration_yellow_light ())) {
+       if ( BuildStopDecision (frame, reference_line_info, &signal_light)) { 
+        has_stop = true ; 
+        signal_debug-> set_is_stop_wall_created ( true ) ; 
+      } 
+    } // Set the intersection area, and whether there is power to pass, parking means no access. If (has_stop) { 
+      reference_line_info-> SetJunctionRightOfWay (signal_light. start_s
+    
+    ,
+                                                 false);  // not protected
+    } else {
+      reference_line_info->SetJunctionRightOfWay(signal_light.start_s, true);
+      // is protected
+    }
+  }
+  
+```
+
+
+### 3.11 Parking condition processing - STOP_SIGN
+
+This can be divided into 2 parts : Find the nearest parking signal and decision processing.
+Finding the next parking spot (stop sign) is done by function ```FindNextStopSign```. 
+Next step is decision making is divided into following steps:
+
+1. Get a list of waiting vehicles - done by function ```GetWatchVehicles```.
+
+This function fetches the waiting vehicles in front of the Ego vehicle. Storage form is :
+```  typedef std::unordered_map<std::string, std::vector<std::string>> StopSignLaneVehicles;
+```
+
+The first in the map ```string``` is the lane id, and the second ```vector<string>``` is the waiting vehicle ID in front of the Ego vehicle on this lane. The overall query is directly obtained in the ```PlanningStatus.stop_sign()``` (parking_state).
+The first time it is empty, and the subsequent is not empty **WHY ?????**
+
+```
+int StopSign::GetWatchVehicles(const StopSignInfo& stop_sign_info,
+                               StopSignLaneVehicles* watch_vehicles) {
+  watch_vehicles->clear();
+  StopSignStatus stop_sign_status = GetPlanningStatus()->stop_sign();
+  // 遍历所有的车道
+  for (int i = 0; i < stop_sign_status.lane_watch_vehicles_size(); ++i) {
+    auto lane_watch_vehicles = stop_sign_status.lane_watch_vehicles(i);
+    std::string associated_lane_id = lane_watch_vehicles.lane_id();
+    std::string s;// 获取每个车道的等候车辆for (int j = 0; j < lane_watch_vehicles.watch_vehicles_size(); ++j) {
+      std::string vehicle = lane_watch_vehicles.watch_vehicles(j);
+      s = s.empty() ? vehicle : s + "," + vehicle;
+      (*watch_vehicles)[associated_lane_id].push_back(vehicle);
+    }
+  }return0;
+}
+
+```
+
+2. Check and update the parking status (stop status) ```PlanningStatis.stop_sign``` - Function used is ```ProcessStopStatus```.
+
+The Parking process (stop) can be divided into 5 stages:
+Normal Drive - DRIVE
+Sttarting Stop - SOP
+Waiting for buffering status - WAIT
+Slowing forward - CREEP
+Stop completed - DONE
+
+
+- If the Ego vehicle is too far from the nearest Stop sign (parking area) then update the status as DRIVE.
+
+```
+// adjust status
+double adc_front_edge_s = reference_line_info->AdcSlBoundary().end_s();
+double stop_line_start_s = next_stop_sign_overlap_.start_s;
+if (stop_line_start_s - adc_front_edge_s >  // max_valid_stop_distance: 3.5m
+      config_.stop_sign().max_valid_stop_distance()) {
+  stop_status_ = StopSignStatus::DRIVE;
+}
+
+```
+
+- If the parking status (stop signal status) is normal driving DRIVE.
+In this case if the Ego vehicle is too large or too far from the stop sign, then continue in the DRIVE status. Otherwise enter the stop state STOP, the status check ```CheckADCkStop``` completed. 
+
+
+- If the parking status is starting to stop STOP.
+In this case, if the waiting time from the start of the stop to the current time does not exceed the threshold stop_duration (default 1s), the STOP state continues to be maintained. Conversely, if the vehicle waiting in front is not empty, then it will enter the next stage WAIT buffer phase; if the vehicle ahead is empty, then you can directly enter the slow forward CREEP state or the parking completion state.
+
+- If the parking status is waiting for buffering WAIT
+In this case, if the waiting time does not exceed a threshold wait_timeout (default 8s) or there is a waiting vehicle ahead, continue to wait. On the contrary, you can enter the slow forward or stop state.
+
+- If the parking status is slow forward CREEP
+In this case, it is only necessary to check the distance between the front of the unmanned vehicle and the parking area. If it is greater than a certain value, it means that it can continue to move slowly, keep the state unchanged, and vice versa.
+
+3. Update ahead waiting vehicle
+a. The current state is DRIVE, then you need to add obstacles to the front waiting for the list of vehicles, because these obstacles will be waiting in front of the unmanned vehicles.
+
+```
+if (stop_status_ == StopSignStatus::DRIVE) {
+  for (const auto* path_obstacle : path_decision->path_obstacles().Items()) {
+    // add to watch_vehicles if adc is still proceeding to stop sign
+    AddWatchVehicle(*path_obstacle, &watch_vehicles);
+  }
+}
+```
+
+
+b. If the current state of the unmanned vehicle is waiting or stopping, delete part of the queue to wait for the vehicle - ```RemoveWatchVehicle``` function completed
+
+In this case, if the obstacle has passed the parking area, delete it; otherwise continue to retain.
+
+```
+Double stop_line_end_s = over_lap_info-> lane_overlap_info ().end_s();
+ double obstacle_end_s = obstacle_s + perception_obstacle.length() / 2 ;
+ double distance_pass_stop_line = obstacle_end_s - stop_line_end_s; // If the obstacle has
+ driven
+ a certain distance through the parking area, the obstacle can be Things are removed from waiting for the vehicle. If (distance_pass_stop_line > config_.stop_sign().min_pass_s_distance() && !is_path_cross) { 
+  erase = true ; 
+} else {
+   // passes associated lane (in junction) 
+  if (!is_path_cross) { 
+    erase = true ; 
+  } 
+} //
+ check if obstacle stops
+if (erase) {
+  for (StopSignLaneVehicles::iterator it = watch_vehicles->begin();
+         it != watch_vehicles->end(); ++it) {
+    std::vector<std::string>& vehicles = it->second;
+    vehicles.erase(std::remove(vehicles.begin(), vehicles.end(), obstacle_id), vehicles.end());
+  }
+}
+
+```
+
+
+- Recompose the remaining obstacles into a new waiting queue -- the ```ClearWatchVehiclefunction``` is complete.
+
+```
+for (Iterator IT StopSignLaneVehicles :: = watch_vehicles-> the begin (); 
+       ! IT = watch_vehicles-> End ();
+        / * NO INCREMENT * / ) { 
+  STD :: Vector <STD :: String> = IT- & vehicle_ids> SECOND ;
+   // Clean obstacles not in Current Perception 
+  for ( Auto obstacle_it = vehicle_ids. the begin (); obstacle_it = vehicle_ids!. End ();) {
+     // If the new queue no longer exists the obstacle, then directly to the obstacle Removes 
+    if (obstacle_ids. count (*obstacle_it) == 0 ) from this lane {   
+      obstacle_it = vehicle_ids.the ERASE (obstacle_it); 
+    } the else { 
+      ++ obstacle_it; 
+    } 
+  } IF (. vehicle_ids empty ()) {   // if this does not exist on the entire lane waiting vehicles, and direct these lanes delete 
+    watch_vehicles-> the ERASE (IT ++ ); 
+  } else { 
+    ++it; 
+  } 
+}
+```
+
+  
+- Update vehicle status PlanningStatus.stop_sign
+This part is ```UpdateWatchVehicles``` done by the function , mainly to update the new waiting vehicle queue obtained in 3 to stop_sign.
+
+
+```
+int StopSign::UpdateWatchVehicles(StopSignLaneVehicles* watch_vehicles) {
+  auto* stop_sign_status = GetPlanningStatus()->mutable_stop_sign();
+  stop_sign_status->clear_lane_watch_vehicles();for (auto it = watch_vehicles->begin(); it != watch_vehicles->end(); ++it) {
+    auto* lane_watch_vehicles = stop_sign_status->add_lane_watch_vehicles();
+    lane_watch_vehicles->set_lane_id(it->first);
+    std::string s;for (size_t
+
+  
+     i = 0; i < it->second.size(); ++i) {
+      std::string vehicle = it->second[i];
+      s = s.empty() ? vehicle : s + "," + vehicle;
+      lane_watch_vehicles->add_watch_vehicles(vehicle);
+    }
+  }return0;
+}
+
+```
+
+   
+c. If the current vehicle status is a slow forward state CREEP
+
+In this case, you can create a parking tag directly.
+
+Finally, the impact of obstacles and road conditions on the decision-making of unmanned vehicles is divided into two categories, one is LongitudinalDecision, and the other is LateralDecision.
+
+Vertical impact:
+
+```
+const STD unordered_map :: <ObjectDecisionType :: ObjectTagCase, int , athObstacle :: ObjectTagCaseHash> 
+    PathObstacle s_longitudinal_decision_safety_sorter_ :: = { 
+        {ObjectDecisionType :: kIgnore , 0 },       // ignored, priority 0 
+        {ObjectDecisionType :: kOvertake , 100 },   / / Overtaking, priority 100 
+        {ObjectDecisionType:: kFollow , 300 },     // Follow, priority 300 
+        {ObjectDecisionType:: kYield , 400 },      // Deceleration, priority 400
+        {ObjectDecisionType:: kStop , 500 }};      // Parking, priority 500
+```
+
+Lateral impact:
+
+```
+const STD unordered_map :: <ObjectDecisionType :: ObjectTagCase, int , PathObstacle :: ObjectTagCaseHash> 
+    PathObstacle s_lateral_decision_safety_sorter_ :: = { 
+        {ObjectDecisionType :: kIgnore , 0 },       // ignored, priority 0 
+        {ObjectDecisionType :: kNudge , 100 },      / / fine-tuning, priority 100 
+        {ObjectDecisionType:: kSidepass , 200 }}; // bypass, priority 200
+
+```
+
+
+What should I do when there is an obstacle to make an unmanned vehicle decision multiple times in 11 road conditions?
+
+Longitudinal decision making, lhs is the first decision, rhs is the second decision, how to combine the two decisions
+
+
+```
+ObjectDecisionType PathObstacle::MergeLongitudinalDecision(
+    const ObjectDecisionType& lhs, const ObjectDecisionType& rhs) {
+  if (lhs.object_tag_case() == ObjectDecisionType::OBJECT_TAG_NOT_SET) {
+    return rhs;
+  }if (rhs.object_tag_case() == ObjectDecisionType::OBJECT_TAG_NOT_SET) {
+    return lhs;
+  }constauto lhs_val =
+      FindOrDie(s_longitudinal_decision_safety_sorter_, lhs.object_tag_case());
+  constauto rhs_val =
+      
+  
+    FindOrDie (s_longitudinal_decision_safety_sorter_, rhs. object_tag_case ());
+   if (lhs_val < rhs_val) {         // prioritize the decision with a higher priority 
+    return rhs; 
+  } else  if (lhs_val > rhs_val) {
+     return lhs; 
+  } else {
+     if (lhs. has_ignore ()) {
+       return rhs; 
+    } else  if (lhs. has_stop ()) {     // If the priorities are the same, they are all parking, choose the decision to stop the parking distance, prevent the safety accident 
+      return lhs. stop (). distance_s () < Rhs.STOP . () distance_s ? () lhs: rhs; 
+    } the else  IF (lhs. has_yield ()) {    // If the same priority, are decelerating, select the deceleration distance small decisions, prevent accidents 
+      return lhs. yield () . distance_s . () <rhs yield . () distance_s ? () lhs: rhs; 
+    } the else  IF (lhs. has_follow ()) {   // If the same priority, are to follow, choose to follow a small distance from the decision-making to prevent security Accident 
+      return lhs. follow (). distance_s () < rhs. follow (). distance_s () ? lhs : rhs; 
+    }the else  IF (lhs. has_overtake ()) { // If the same priority, are overtaking, overtaking selected from the large decisions, prevent accidents 
+      return lhs. overtake (). distance_s ()> rhs. overtake (). distance_s ( Lhs : rhs; 
+    } else {
+       DCHECK ( false ) << " Unknown decision " ; 
+    } 
+  } return lhs;   // stop compiler complaining 
+}
+
+```
+  
+Lateral consolidation, lhs is the first decision, rhs is the second decision, how to combine the two decisions
+
+```
+ObjectDecisionType PathObstacle::MergeLateralDecision(
+    const ObjectDecisionType& lhs, const ObjectDecisionType& rhs) {
+  if (lhs.object_tag_case() == ObjectDecisionType::OBJECT_TAG_NOT_SET) {
+    return rhs;
+  }if (rhs.object_tag_case() == ObjectDecisionType::OBJECT_TAG_NOT_SET) {
+    return lhs;
+  }constauto lhs_val =
+      FindOrDie(s_lateral_decision_safety_sorter_, lhs.object_tag_case());
+  constauto rhs_val =
+      FindOrDie
+  
+    (s_lateral_decision_safety_sorter_, RHS. object_tag_case ());
+   IF (lhs_val <rhs_val) {          // prefers the priority decision large        
+    return RHS; 
+  } the else  IF (lhs_val> rhs_val) {
+     return LHS; 
+  } the else {
+     IF (LHS. has_ignore ( ) || lhs. has_sidepass ()) {
+       return rhs; 
+    } else  if (lhs. has_nudge ()) {                         // If the priorities are the same, they are fine-tuned, and the side-by-side fine-tuning decision is made to 
+      return  std::fabs (lhs. Nudge().distance_l()) >
+                     std::fabs(rhs.nudge().distance_l())
+                 ? lhs
+                 : rhs;
+    }
+  }return lhs;
+}
+
+```
 
